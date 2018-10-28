@@ -9,6 +9,7 @@ use url::Url;
 
 use core::profiles::Profiles;
 use core::registry::PackageRegistry;
+use sources::registry::RegistryPackage;
 use core::{Dependency, PackageIdSpec};
 use core::{EitherManifest, Package, SourceId, VirtualManifest};
 use ops;
@@ -745,6 +746,19 @@ impl<'cfg> Workspace<'cfg> {
             }
         }
         Ok(())
+    }
+
+    pub fn generate_index_metadata(&self) -> CargoResult<RegistryPackage<'cfg>> {
+        let pkg = self.current()?;
+        let filename = format!("{}-{}.crate", pkg.name(), pkg.version());
+
+        let output_dir = self.target_dir().join("package");
+
+        output_dir
+            .open_ro(filename, self.config, "package file")
+            .and_then(|idx_file| RegistryPackage::from_package(pkg, idx_file))
+            .chain_err(|| "Crate must be packaged with `cargo package` first.")
+            .map_err(Into::into)
     }
 }
 

@@ -174,7 +174,7 @@ use core::source::MaybePackage;
 use core::{Package, PackageId, Source, SourceId, Summary};
 use sources::PathSource;
 use util::errors::CargoResultExt;
-use util::hex;
+use util::{hex, Sha256};
 use util::to_url::ToUrl;
 use util::{internal, CargoResult, Config, FileLock, Filesystem};
 
@@ -214,7 +214,7 @@ pub struct RegistryConfig {
     pub api: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct RegistryPackage<'a> {
     name: Cow<'a, str>,
     vers: Version,
@@ -222,7 +222,32 @@ pub struct RegistryPackage<'a> {
     features: BTreeMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
     cksum: String,
     yanked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     links: Option<Cow<'a, str>>,
+}
+
+impl<'a> RegistryPackage<'a> {
+    pub fn from_package(pkg: &Package, mut pkg_file: FileLock) -> CargoResult<Self> {
+        use std::io::Read;
+        let cksum = {
+            let mut c = Vec::new();
+            pkg_file.read_to_end(&mut c)?;
+            let mut sha = Sha256::new();
+            sha.update(&c);
+            ::hex::encode(&sha.finish())
+        };
+        Ok(
+            Self {
+                name: pkg.name().as_str().into(),
+                vers: pkg.version().clone(),
+                deps: pkg.dependencies().into_iter().map(RegistryDependency::from_dep).collect(),
+                features: pkg.summary().features().into_iter().map(|(k,v)| (Cow::Owned(k.to_string()), v.into_iter().map(|f| Cow::Owned(f.to_string(pkg.summary()))).collect())).collect(),
+                cksum,
+                yanked: Some(false),
+                links: pkg.summary().links().map(|l| Cow::Owned(l.to_string()))
+            }
+        )
+    }
 }
 
 #[test]
@@ -267,7 +292,7 @@ enum Field {
     Links,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct RegistryDependency<'a> {
     name: Cow<'a, str>,
     req: Cow<'a, str>,
@@ -335,6 +360,24 @@ impl<'a> RegistryDependency<'a> {
             .set_kind(kind);
 
         Ok(dep)
+    }
+
+    pub fn from_dep(dep: &Dependency) -> Self {
+        Self {
+            name: dep.name_in_toml().as_str().into(),
+            req: dep.version_req().to_string().into(),
+            features: dep.features().into_iter().map(ToString::to_string).map(|s| Cow::Owned(s)).collect(),
+            optional: dep.is_optional(),
+            default_features: dep.uses_default_features(),
+            target: dep.platform().map(|s| s.to_string().into()),
+            kind: Some(match dep.kind() {
+                Kind::Normal => "normal",
+                Kind::Build => "build",
+                Kind::Development => "dev",
+            }.into()),
+            registry: dep.registry_id().map(|s| Cow::Owned(s.url().to_string())),
+            package: None,
+        }
     }
 }
 
